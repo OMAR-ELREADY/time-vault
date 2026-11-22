@@ -1,36 +1,42 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using TimeVault.Core.DataStructures;
+using TimeVault.Core.Models;
 
-namespace TimeVault
+namespace TimeVault.Core.Services.Watcher
 {
     public class WatcherService
     {
         // Keep track of the active watcher for each folder by its ID
         private Dictionary<string, FileSystemWatcher> activeWatchers = new Dictionary<string, FileSystemWatcher>();
 
-        // Our team's custom LinkedQueue to hold events until we process them
-        private LinkedQueue<ChangeEvent> eventQueue;
+        // Custom LinkedQueue to hold events until we process them
+        private LinkedQueue eventQueue;
 
         // Remember when each file last changed so we can ignore rapid duplicates
         private Dictionary<string, DateTime> lastChangedTimes = new Dictionary<string, DateTime>();
 
-        public WatcherService(LinkedQueue<ChangeEvent> queue)
+        public WatcherService(LinkedQueue queue)
         {
             eventQueue = queue;
         }
 
         public void StartWatching(WatchedFolder folder)
         {
-            // Make sure the directory actually exists on disk
-            if (!Directory.Exists(folder.Path))
+            if (string.IsNullOrEmpty(folder.Path) || !Directory.Exists(folder.Path))
+                return;
+
+            if (string.IsNullOrEmpty(folder.Id))
                 return;
 
             // If we are already watching this folder, stop it first so we don't get duplicate watchers
             StopWatching(folder.Id);
 
-            FileSystemWatcher watcher = new FileSystemWatcher(folder.Path);
-            watcher.IncludeSubdirectories = true;
+            FileSystemWatcher watcher = new FileSystemWatcher(folder.Path)
+            {
+                IncludeSubdirectories = folder.IncludeSubdirectories
+            };
 
             // Hook up the events
             watcher.Created += (sender, e) => RecordChange(folder.Id, e.FullPath, "Created");
@@ -69,8 +75,8 @@ namespace TimeVault
             {
                 DateTime now = DateTime.Now;
 
-                // When an app (like Notepad or Word) saves a file, Windows fires 2 or 3 'Changed' events
-                // within a few milliseconds. We skip any event on the same file if it happened less than 500ms ago.
+                // When an app saves a file, Windows fires multiple events within milliseconds.
+                // We skip any event on the same file if it happened less than 500ms ago.
                 if (lastChangedTimes.ContainsKey(filePath))
                 {
                     double millisecondsSinceLast = (now - lastChangedTimes[filePath]).TotalMilliseconds;
@@ -85,77 +91,15 @@ namespace TimeVault
                 // Create the change event object and push it into our queue
                 ChangeEvent newEvent = new ChangeEvent
                 {
-                    FolderId = folderId,
-                    FullPath = filePath,
+                    Id = Guid.NewGuid().ToString(),
+                    WatchedFolderId = folderId,
+                    FilePath = filePath,
                     ChangeType = changeType,
-                    Timestamp = now
+                    OccurredAt = now
                 };
 
                 eventQueue.Enqueue(newEvent);
             }
-        }
-    }
-
-    // --- Supporting Models & Data Structure needed by WatcherService ---
-
-    public class ChangeEvent
-    {
-        public string FolderId { get; set; }
-        public string FullPath { get; set; }
-        public string ChangeType { get; set; } // Created, Modified, Deleted, Renamed
-        public DateTime Timestamp { get; set; }
-    }
-
-    public class WatchedFolder
-    {
-        public string Id { get; set; }
-        public string Path { get; set; }
-    }
-
-    public class LinkedQueue<T>
-    {
-        private class Node
-        {
-            public T Value;
-            public Node Next;
-            public Node(T val) { Value = val; }
-        }
-
-        private Node head;
-        private Node tail;
-        private int count;
-
-        public int Count => count;
-        public bool IsEmpty => count == 0;
-
-        public void Enqueue(T item)
-        {
-            Node newNode = new Node(item);
-            if (tail == null)
-            {
-                head = tail = newNode;
-            }
-            else
-            {
-                tail.Next = newNode;
-                tail = newNode;
-            }
-            count++;
-        }
-
-        public bool TryDequeue(out T item)
-        {
-            if (head == null)
-            {
-                item = default;
-                return false;
-            }
-
-            item = head.Value;
-            head = head.Next;
-            if (head == null) tail = null;
-            count--;
-            return true;
         }
     }
 }
